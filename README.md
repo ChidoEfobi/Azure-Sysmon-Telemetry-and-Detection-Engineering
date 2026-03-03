@@ -1,4 +1,8 @@
 # Azure-Sysmon-Telemetry-and-Detection-Engineering
+
+
+![Sysmon Event 3 Telemetry Validation](images/Cloud_Infrastructure_security_lab.png)
+
 ## Overview
 
 This project demonstrates the design and implementation of a host-level telemetry and detection engineering pipeline in Azure.
