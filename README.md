@@ -71,17 +71,19 @@ Logs were forwarded via Azure Monitor Agent using a custom Data Collection Rule 
 Raw Sysmon events are ingested into the Event table.
 
 Initial validation query:
-<pre>Event
+```kql
+Event
 | where EventID == 3
 | take 10
-</pre>
+```
 The relevant telemetry fields are embedded inside **`ParameterXml`**, requiring explicit parsing.
 
 ## Parsing Raw Sysmon XML
 
 Because Sysmon parameters are stored as indexed **`<Param>`** values, structured extraction is required.
 
-<pre>Event
+```kql
+Event
 | where EventID == 3
 | extend ParamXml = parse_xml(ParameterXml)
 | extend
@@ -93,7 +95,7 @@ Because Sysmon parameters are stored as indexed **`<Param>`** values, structured
     DestinationIp = tostring(ParamXml.Param[14]),
     DestinationPort = tostring(ParamXml.Param[16])
 | project TimeGenerated, SourceIp, DestinationIp, DestinationPort, Image, Protocol
-</pre>
+```
 
 This converts raw XML into structured fields suitable for hunting and detection.
 
@@ -182,7 +184,8 @@ Trigger alert when:
 
 - Within a 15-minute window
 
-<Pre>let TimeWindow = 15m;
+```kql
+let TimeWindow = 15m;
 
 let FailedLogons =
 SecurityEvent
@@ -204,7 +207,7 @@ Event
 SSHConnections
 | join kind=inner FailedLogons on $left.SourceIp == $right.IpAddress
 | where ConnectionAttempts >= 20 and FailedAttempts >= 10
-</Pre>
+```
 
 This query was deployed as a scheduled query rule in Azure Monitor.
 
