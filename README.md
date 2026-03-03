@@ -77,8 +77,7 @@ Event
 | take 10
 ```
 Below is the screenshot of the first 10 Event 3 records in Log Analytics. 
-<img width="944" height="425" alt="telemetry_validation_event3" src="https://github.com/user-attachments/assets/63269f56-6622-4465-a260-bda0c5c44001" />
-
+![Sysmon Event 3 Telemetry Validation](images/telemetry_validation_event3.png)
 
 The relevant telemetry fields are embedded inside **`ParameterXml`**, requiring explicit parsing.
 ## Parsing Raw Sysmon XML
