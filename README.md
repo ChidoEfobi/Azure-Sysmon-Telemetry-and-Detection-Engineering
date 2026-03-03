@@ -76,8 +76,11 @@ Event
 | where EventID == 3
 | take 10
 ```
-The relevant telemetry fields are embedded inside **`ParameterXml`**, requiring explicit parsing.
+Below is the screenshot of the first 10 Event 3 records in Log Analytics. 
+<img width="944" height="425" alt="telemetry_validation_event3" src="https://github.com/user-attachments/assets/63269f56-6622-4465-a260-bda0c5c44001" />
 
+
+The relevant telemetry fields are embedded inside **`ParameterXml`**, requiring explicit parsing.
 ## Parsing Raw Sysmon XML
 
 Because Sysmon parameters are stored as indexed **`<Param>`** values, structured extraction is required.
@@ -171,45 +174,68 @@ TargetUserName → NOUSER
 
 FailedAttempts → 56
 
-
 ## Detection Engineering
 
-The following detection logic was implemented:
+The following detection logic was implemented to identify brute-force behavior in the lab environment:
 
-Trigger alert when:
+**Trigger alert when:**
 
-- ≥ 20 SSH connection attempts
-
-- AND ≥ 10 failed logons
-
+- ≥ 20 SSH connection attempts  
+- AND ≥ 10 failed logons  
 - Within a 15-minute window
 
+---
+
+### 1. Capture SSH network connections and process context (Sysmon Event 1 & 3)
+
 ```kql
-let TimeWindow = 15m;
-
-let FailedLogons =
-SecurityEvent
-| where EventID == 4625
-| where TimeGenerated > ago(TimeWindow)
-| summarize FailedAttempts = count() by IpAddress;
-
-let SSHConnections =
+// Capture process creations and network connections from Sysmon
 Event
-| where EventID == 3
-| where TimeGenerated > ago(TimeWindow)
+| where EventID == 1 or EventID == 3
 | extend ParamXml = parse_xml(ParameterXml)
 | extend
-    SourceIp = tostring(ParamXml.Param[9]),
-    DestinationPort = tostring(ParamXml.Param[16])
-| where DestinationPort == "22"
-| summarize ConnectionAttempts = count() by SourceIp;
+    EventType = case(EventID == 1, "ProcessCreation", EventID == 3, "NetworkConnection", "Other"),
+    ProcessGuid = tostring(ParamXml.Param[2]),
+    SourceIp = iif(EventID == 3, tostring(ParamXml.Param[9]), ""),
+    DestinationPort = iif(EventID == 3, tostring(ParamXml.Param[16]), ""),
+    ProcessName = iif(EventID == 3, tostring(ParamXml.Param[4]), ""),
+    CommandLine = iif(EventID == 1, tostring(ParamXml.Param[10]), "")
+| summarize Events=count(), min(TimeGenerated), max(TimeGenerated) by EventType, ProcessGuid, SourceIp, DestinationPort, ProcessName, CommandLine
+| order by max_TimeGenerated desc
+```
+This establishes:
 
-SSHConnections
-| join kind=inner FailedLogons on $left.SourceIp == $right.IpAddress
-| where ConnectionAttempts >= 20 and FailedAttempts >= 10
+- Which process accepted the network connection
+
+- What command-line context was involved
+
+- Whether child processes were spawned post-connection
+
+### 2. Capture failed Windows logons (SecurityEvent 4625)
+```kql
+// Summarize failed logons in 5-minute bins
+Event
+| where EventID == 4625
+| extend XmlData = parse_xml(tostring(EventData))
+| extend TargetUserName = tostring(XmlData.Event.EventData.Data[5]),
+         Status = tostring(XmlData.Event.EventData.Data[8])
+| summarize FailedAttempts = count() by TargetUserName, Status, bin(TimeGenerated, 5m)
+| order by TimeGenerated desc
 ```
 
-This query was deployed as a scheduled query rule in Azure Monitor.
+This shows:
+
+- Failed authentication attempts per user
+
+- The authentication status and frequency over time
+
+### Implementation Notes:
+
+- These queries were deployed as scheduled query rules in Azure Monitor.
+
+- They form the basis for SOC alerts and can be extended with thresholds for automated incident response.
+
+- Demonstrates real-time detection, correlation, and threat hunting skills relevant for senior cloud and security architecture roles.
 
 ## Security Engineering Considerations
 
@@ -226,6 +252,7 @@ This implementation emphasizes:
 - Operationalization into alerting
 
 The approach mirrors production detection engineering workflows rather than ad-hoc log queries.
+
 
 ## Key Competencies Demonstrated
 
