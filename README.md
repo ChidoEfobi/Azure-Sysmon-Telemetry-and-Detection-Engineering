@@ -110,7 +110,12 @@ The VM was intentionally reachable from the internet to observe baseline attack 
 Event
 | where Source == "Microsoft-Windows-Sysmon"
 | where EventID == 3
-| summarize Connections=count()
+| extend Parsed=parse_xml(EventData)
+| extend SourceIP=tostring(Parsed.EventData.Data[1]["#text"])
+| extend DestinationIP=tostring(Parsed.EventData.Data[3]["#text"])
+| summarize Connections=count() by SourceIP
+| order by Connections desc
+| take 20
 ```
 ### Result
 
@@ -135,13 +140,8 @@ Event
 | summarize Connections=count() by bin(TimeGenerated, 1h)
 | order by TimeGenerated asc
 ```
-### Example Results
-Time	Connections
-03:00	864
-04:00	1987
-18:00	1785
-19:00	1833
-20:00	1810
+### Results
+
 
 ![Network Activity Timeline](images/network-activity-timeline.png)
 
@@ -155,11 +155,15 @@ Process telemetry provides insight into how workloads behave internally.
 Event
 | where Source == "Microsoft-Windows-Sysmon"
 | where EventID == 1
-| summarize ExecutionCount=count()
+| extend Parsed=parse_xml(EventData)
+| extend Image=tostring(Parsed.EventData.Data[4]["#text"])
+| summarize ExecutionCount=count() by Image
+| order by ExecutionCount desc
+| take 20
 ```
 ### Result
 
-6,510 process executions observed
+3,847 process executions observed
 
 ![Endpoint Process Behavior](images/process-execution-volume.png)
 
@@ -175,9 +179,11 @@ Event
 | summarize Events=count() by EventID
 ```
 ### Observed Activity
-EventID	Activity	Count
-1	Process start	6,522
-5	Process termination	6,298
+| EventID | Activity            | Count |
+| ------- | ------------------- | ------ |
+| 1       | Process Start       | 3,849 |
+| 5       | Process termination | 3,750|
+
 
 ![Process Lifecycle Monitoring](images/process-lifecycle.png)
 
@@ -226,7 +232,7 @@ This mirrors how modern SOC teams develop detection capabilities.
 
 - Security monitoring in Microsoft Sentinel
 
-#Future Enhancements
+# Future Enhancements
 
 - Microsoft Defender for Cloud integration
 
