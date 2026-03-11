@@ -1,292 +1,237 @@
-# Azure-Sysmon-Telemetry-and-Detection-Engineering
+# Azure Detection Engineering Lab  
+### Cloud Endpoint Telemetry | Threat Hunting | Microsoft Sentinel
 
-
-![Sysmon Event 3 Telemetry Validation](images/Cloud_Infrastructure_security_lab.png)
+![Lab Architecture](images/Cloud_Infrastructure_security_lab.png)
 
 ## Overview
 
-This project demonstrates the design and implementation of a host-level telemetry and detection engineering pipeline in Azure.
+This project demonstrates how to design a **cloud-based detection engineering pipeline** capable of generating, ingesting, and analyzing endpoint telemetry from a Windows workload running in Microsoft Azure.
 
-The objective was not to “collect logs,” but to:
+Rather than focusing on simple log collection, this lab emphasizes **security visibility, telemetry engineering, and threat hunting workflows** similar to those used by modern Security Operations Centers (SOC).
 
-- Engineer structured telemetry from a cloud-hosted Windows VM
+A cloud-hosted VM was intentionally exposed to the internet to observe how external infrastructure interacts with publicly reachable systems. Endpoint telemetry was then normalized and analyzed using **Sysmon, Azure Monitor, Log Analytics, and Microsoft Sentinel**.
 
-- Normalize and parse raw Sysmon XML data in Log Analytics
+The result is a working detection engineering environment capable of identifying behavioral patterns across:
 
-- Correlate network activity, process execution, and authentication failures
-
-- Develop threshold-based brute-force detection logic
-
-- Operationalize the detection as a scheduled query rule
-
-The result is a reproducible detection engineering workflow that identifies real-world SSH attack activity against exposed infrastructure.
-
-## Architecture
-
-### Azure Subscription
-
-→ Resource Group
-
-→ Windows Server VM (Public IP enabled for SSH exposure)
-
-→ Sysmon (Event ID 1 & 3 enabled)
-
-→ Data Collection Rule
-
-→ Log Analytics Workspace
-
-→ Custom KQL Correlation & Detection Rule
-
-This architecture intentionally separates:
-
-- Host telemetry generation
-
-- Log ingestion and normalization
-
-- Detection logic
-
-- Alert operationalization
-
-## Telemetry Engineering
-### Sysmon Configuration
-
-Sysmon was deployed with configuration enabling:
-
-- Event ID 1 — Process Creation
-
-- Event ID 3 — Network Connections
-
-These events provide:
-
-- Process GUID correlation
-
-- Command-line visibility
-
-- Source and destination IP tracking
-
-- Port and protocol insight
-
-Logs were forwarded via Azure Monitor Agent using a custom Data Collection Rule targeting:
-
-**`Microsoft-Windows-Sysmon/Operational`**
-
-## Log Ingestion Validation
-
-Raw Sysmon events are ingested into the Event table.
-
-Initial validation query:
-```kql
-Event
-| where EventID == 3
-| take 10
-```
-Below is the screenshot of the first 10 Event 3 records in Log Analytics. 
-![Sysmon Event 3 Telemetry Validation](images/telemetry_validation_event3.png)
-
-The relevant telemetry fields are embedded inside **`ParameterXml`**, requiring explicit parsing.
-## Parsing Raw Sysmon XML
-
-Because Sysmon parameters are stored as indexed **`<Param>`** values, structured extraction is required.
-
-```kql
-Event
-| where EventID == 3
-| extend ParamXml = parse_xml(ParameterXml)
-| extend
-    ProcessGuid = tostring(ParamXml.Param[2]),
-    Image = tostring(ParamXml.Param[4]),
-    User = tostring(ParamXml.Param[5]),
-    Protocol = tostring(ParamXml.Param[6]),
-    SourceIp = tostring(ParamXml.Param[9]),
-    DestinationIp = tostring(ParamXml.Param[14]),
-    DestinationPort = tostring(ParamXml.Param[16])
-| project TimeGenerated, SourceIp, DestinationIp, DestinationPort, Image, Protocol
-```
-
-This converts raw XML into structured fields suitable for hunting and detection.
-
-## Observed External Attack Activity
-
-Live telemetry captured external SSH scanning activity:
-
-- External Source IP targeting port 22
-
-- Process handling connection: sshd.exe
-
-- Protocol: TCP
-
-- Destination: Azure VM internal IP
-
-This confirms real-world exposure and validates the telemetry pipeline.
-
-## Correlation: Network Activity → Authentication Failures
-
-This section demonstrates advanced threat-hunting by correlating Sysmon and Windows Security events. It establishes:
-
-- Which process accepted or initiated the network connection (Event 3)  
-- The command-line context and parent/child process relationships involved (Event 1)  
-- User accounts targeted by failed logons (Event 4625)  
-- Temporal correlation of events to identify suspicious behavior and potential brute-force attacks  
-
-
-
-```kql
-// Capture network connections (Event 3) and process creations (Event 1) from Sysmon 
-Event
-| where EventID == 1 or EventID == 3
-| extend ParamXml = parse_xml(ParameterXml)
-| extend
-    EventType = case(EventID == 1, "ProcessCreation", EventID == 3, "NetworkConnection", "Other"),
-    ProcessGuid = tostring(ParamXml.Param[2]),
-    SourceIp = iif(EventID == 3, tostring(ParamXml.Param[9]), ""),
-    DestinationPort = iif(EventID == 3, tostring(ParamXml.Param[16]), ""),
-    ProcessName = iif(EventID == 3, tostring(ParamXml.Param[4]), ""),
-    CommandLine = iif(EventID == 1, tostring(ParamXml.Param[10]), "")
-| summarize Events=count(), min(TimeGenerated), max(TimeGenerated) 
-          by EventType, ProcessGuid, SourceIp, DestinationPort, ProcessName, CommandLine
-| order by max_TimeGenerated desc
-```
-Sample Result:
-
-ProcessCreation → {29c9e563-27de-69a7-db08-000000000700}
-
-ProcessName → C:\Windows\System32\OpenSSH\sshd.exe
-
-CommandLine → "C:\Windows\System32\OpenSSH\sshd.exe" -y
-
-Events Count → 1
-
-TimeGenerated → 2026-03-03T18:26:38.2173536Z
-
-
-```kql
-// Query 2 – Failed Logon Events (SecurityEvent 4625)
-Event
-| where EventID == 4625
-| extend XmlData = parse_xml(tostring(EventData))
-| extend TargetUserName = tostring(XmlData.Event.EventData.Data[5]),
-         Status = tostring(XmlData.Event.EventData.Data[8])
-| summarize FailedAttempts = count() by TargetUserName, Status, bin(TimeGenerated, 5m)
-| order by TimeGenerated desc
-```
-Sample Result:
-
-TimeGenerated → 2026-03-03T18:20:00Z
-
-TargetUserName → NOUSER
-
-FailedAttempts → 56
-
-## Detection Engineering
-
-The following detection logic was implemented to identify brute-force behavior in the lab environment:
-
-**Trigger alert when:**
-
-- ≥ 20 SSH connection attempts  
-- AND ≥ 10 failed logons  
-- Within a 15-minute window
+- network activity  
+- process execution  
+- endpoint lifecycle events  
 
 ---
 
-### 1. Capture SSH network connections and process context (Sysmon Event 1 & 3)
+# Architecture
+
+Telemetry pipeline implemented in this lab:
+
+Internet Traffic  
+↓  
+Azure Windows VM  
+↓  
+Sysmon Endpoint Telemetry  
+↓  
+Azure Monitor Agent  
+↓  
+Data Collection Rule  
+↓  
+Log Analytics Workspace  
+↓  
+KQL Threat Hunting Queries  
+↓  
+Microsoft Sentinel
+
+### Core Components
+
+| Component | Role |
+|---|---|
+| Azure VM | Cloud workload generating telemetry |
+| Sysmon | High-fidelity endpoint logging |
+| Azure Monitor Agent | Secure telemetry forwarding |
+| Data Collection Rules | Structured ingestion configuration |
+| Log Analytics | Centralized log storage |
+| Microsoft Sentinel | Threat hunting and detection platform |
+
+This architecture reflects the **typical telemetry pipeline used by cloud-native security operations teams**.
+
+---
+
+# Telemetry Engineering
+
+## Sysmon Configuration
+
+Sysmon was deployed to generate high-fidelity endpoint telemetry.
+
+Enabled event types:
+
+| Event ID | Description |
+|---|---|
+| 1 | Process creation |
+| 3 | Network connections |
+| 5 | Process termination |
+| 255 | Sysmon operational events |
+
+These signals provide visibility into:
+
+- command-line execution  
+- process lineage  
+- endpoint network activity  
+- runtime process lifecycle behavior  
+
+---
+
+# Telemetry Validation
+
+Initial validation confirmed successful ingestion of Sysmon telemetry into Log Analytics.
+
+### Query
 
 ```kql
-// Capture process creations and network connections from Sysmon
 Event
-| where EventID == 1 or EventID == 3
-| extend ParamXml = parse_xml(ParameterXml)
-| extend
-    EventType = case(EventID == 1, "ProcessCreation", EventID == 3, "NetworkConnection", "Other"),
-    ProcessGuid = tostring(ParamXml.Param[2]),
-    SourceIp = iif(EventID == 3, tostring(ParamXml.Param[9]), ""),
-    DestinationPort = iif(EventID == 3, tostring(ParamXml.Param[16]), ""),
-    ProcessName = iif(EventID == 3, tostring(ParamXml.Param[4]), ""),
-    CommandLine = iif(EventID == 1, tostring(ParamXml.Param[10]), "")
-| summarize Events=count(), min(TimeGenerated), max(TimeGenerated) by EventType, ProcessGuid, SourceIp, DestinationPort, ProcessName, CommandLine
-| order by max_TimeGenerated desc
+| where Source == "Microsoft-Windows-Sysmon"
+| summarize EventCount=count() by EventID
+| order by EventCount desc
 ```
-This establishes:
 
-- Which process accepted the network connection
+### Observed Telemetry Volume
+| EventID | Description         | Events |
+| ------- | ------------------- | ------ |
+| 3       | Network connections | 17,778 |
+| 1       | Process creation    | 3,854  |
+| 5       | Process termination | 3,752  |
 
-- What command-line context was involved
+![Observed Telemetry Volume](images/sysmon-event-volume.png)
 
-- Whether child processes were spawned post-connection
 
-### 2. Capture failed Windows logons (SecurityEvent 4625)
+# Network Exposure Analysis
+
+The VM was intentionally reachable from the internet to observe baseline attack surface interaction.
+
+### Query
 ```kql
-// Summarize failed logons in 5-minute bins
 Event
-| where EventID == 4625
-| extend XmlData = parse_xml(tostring(EventData))
-| extend TargetUserName = tostring(XmlData.Event.EventData.Data[5]),
-         Status = tostring(XmlData.Event.EventData.Data[8])
-| summarize FailedAttempts = count() by TargetUserName, Status, bin(TimeGenerated, 5m)
-| order by TimeGenerated desc
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 3
+| summarize Connections=count()
 ```
+### Result
 
-This shows:
+Total network connections observed:
 
-- Failed authentication attempts per user
+17,821
 
-- The authentication status and frequency over time
+Even minimally exposed infrastructure receives continuous background traffic from automated internet scanning infrastructure.
 
-### Implementation Notes:
-
-- These queries were deployed as scheduled query rules in Azure Monitor.
-
-- They form the basis for SOC alerts and can be extended with thresholds for automated incident response.
-
-- Demonstrates real-time detection, correlation, and threat hunting skills relevant for senior cloud and security architecture roles.
-
-## Security Engineering Considerations
-
-This implementation emphasizes:
-
-- Structured telemetry ingestion
-
-- Explicit XML normalization
-
-- Cross-event correlation via ProcessGuid
-
-- Signal-to-noise reduction through threshold logic
-
-- Operationalization into alerting
-
-The approach mirrors production detection engineering workflows rather than ad-hoc log queries.
+![Network Exposure Analysis](images/network-connection-volume.png)
 
 
-## Key Competencies Demonstrated
+# Network Activity Timeline
 
-- Azure infrastructure deployment
+Analyzing activity over time helps identify abnormal spikes or attack windows.
 
-- Host-level telemetry engineering
+### Query
+```kql
+Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 3
+| summarize Connections=count() by bin(TimeGenerated, 1h)
+| order by TimeGenerated asc
+```
+### Example Results
+Time	Connections
+03:00	864
+04:00	1987
+18:00	1785
+19:00	1833
+20:00	1810
 
-- Azure Monitor Agent and Data Collection Rules
+![Network Activity Timeline](images/network-activity-timeline.png)
 
-- Log Analytics schema normalization
 
-- Advanced KQL parsing and joins
+# Endpoint Process Behavior
 
-- Threat hunting methodology
+Process telemetry provides insight into how workloads behave internally.
 
-- Detection engineering lifecycle
+### Query
+```kql
+Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID == 1
+| summarize ExecutionCount=count()
+```
+### Result
 
-- Cloud-based brute-force identification
+6,510 process executions observed
 
-## Next Iteration
+![Endpoint Process Behavior](images/process-execution-volume.png)
 
-Future expansions of this work will integrate:
+# Process Lifecycle Monitoring
 
-- Microsoft Sentinel analytic rules
+Process start and termination telemetry allows visibility into system runtime behavior.
 
-- Incident automation playbooks
+### Query
+```kql
+Event
+| where Source == "Microsoft-Windows-Sysmon"
+| where EventID in (1,5)
+| summarize Events=count() by EventID
+```
+### Observed Activity
+EventID	Activity	Count
+1	Process start	6,522
+5	Process termination	6,298
 
-- Identity attack surface analysis
+![Process Lifecycle Monitoring](images/process-lifecycle.png)
 
-- Defender for Cloud integration
+# Detection Engineering Approach
 
-- NSG and network segmentation redesign
+The objective of this lab was to build telemetry capable of supporting detection engineering workflows.
 
-This project reflects a structured approach to building visibility, correlating telemetry, and translating signal into actionable detection logic within Azure.
+The methodology used follows a common detection engineering process:
+
+- Generate high fidelity endpoint telemetry
+
+- Normalize raw event structures
+
+- Identify meaningful security signals
+
+- Build threat hunting queries
+
+- Convert successful hunts into detection logic
+
+This mirrors how modern SOC teams develop detection capabilities.
+
+# Technologies Used
+
+- Microsoft Azure
+
+- Microsoft Sentinel
+
+- Azure Monitor
+
+- Log Analytics
+
+- Sysmon
+
+- Kusto Query Language (KQL)
+
+
+# Skills Demonstrated
+
+- Cloud security architecture
+
+- Endpoint telemetry engineering
+
+- Threat hunting
+
+- KQL query development
+
+- Security monitoring in Microsoft Sentinel
+
+#Future Enhancements
+
+- Microsoft Defender for Cloud integration
+
+- Sentinel analytic rules
+
+- Automated detection playbooks
+
+- Threat intelligence enrichment
