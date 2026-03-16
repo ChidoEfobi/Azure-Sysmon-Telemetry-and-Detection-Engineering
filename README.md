@@ -1,4 +1,4 @@
-# Azure Detection Engineering Lab  
+# Azure Security Telemetry Lab  
 ### Cloud Endpoint Telemetry | Threat Hunting | Microsoft Sentinel
 
 ![Lab Architecture](images/Cloud_Infrastructure_security_lab.png)
